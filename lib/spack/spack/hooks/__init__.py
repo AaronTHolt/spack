@@ -24,7 +24,7 @@
 ##############################################################################
 """This package contains modules with hooks for various stages in the
    Spack install process.  You can add modules here and they'll be
-   executaed by package at various times during the package lifecycle.
+   executed by package at various times during the package lifecycle.
 
    Each hook is just a function that takes a package as a parameter.
    Hooks are not executed in any particular order.

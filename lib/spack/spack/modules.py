@@ -52,6 +52,8 @@ import spack.config
 from llnl.util.filesystem import join_path, mkdirp
 from spack.environment import *
 
+import spack.compilers  # Needed by LmodModules
+
 __all__ = ['EnvModule', 'Dotkit', 'TclModule']
 
 # Registry of all types of modules.  Entries created by EnvModule's metaclass
@@ -206,7 +208,11 @@ class EnvModule(object):
     def remove(self):
         mod_file = self.file_name
         if os.path.exists(mod_file):
-            shutil.rmtree(mod_file, ignore_errors=True)
+            try:
+                os.remove(mod_file)  # Remove the module file
+                os.removedirs(os.path.dirname(mod_file))  # Remove all the empty directories from the leaf up
+            except OSError:
+                pass  # removedirs throws OSError on first non-empty directory found
 
 
 class Dotkit(EnvModule):
@@ -281,3 +287,134 @@ class TclModule(EnvModule):
             for line in textwrap.wrap(self.long_description, 72):
                 module_file.write("puts stderr \"%s\"\n" % line)
             module_file.write('}\n\n')
+
+
+class LmodModule(EnvModule):
+    name = 'lmod'
+    path = join_path(spack.share_path, "lmod")
+
+    formats = {
+        PrependPath: 'prepend_path("{name}", "{value}")\n',
+        AppendPath: 'append-path("{name}", "{value}")\n',
+        RemovePath: 'remove-path("{name}", "{value}")\n',
+        SetEnv: 'setenv("{name}", "{value})"\n',
+        UnsetEnv: 'unsetenv("{name}")\n'
+    }
+
+    def __init__(self, spec=None):
+        super(LmodModule, self).__init__(spec)
+        # Sets tha appropriate category to be used with the 'family' function
+        self.family = self._guess_family(spec)
+        # Sets the root directory for this architecture
+        self.modules_root = join_path(LmodModule.path, self.spec.architecture)
+
+    def _guess_family(self, spec):
+        # What is defined at package level takes precedence
+        if hasattr(spec.package, 'family'):
+            return spec.package.family
+        # If it is in the list of supported compilers family -> compiler
+        if spec.name in spack.compilers.supported_compilers():
+            return 'compiler'
+        # If it provides mpi family -> mpi
+        if spec.package.provides('mpi'):
+            return 'mpi'
+        # No family
+        return None
+
+    @property
+    def file_name(self):
+        if self._use_system_compiler() and not self._is_mpi_dependent():
+            # If the module is installed using the system compiler and does not need MPI put the modulefile in 'Core'
+            hierarchy_name = 'Core'
+        elif not self._is_mpi_dependent():
+            # If the module is serial and built using a compiler other than the system one,
+            # put the modulefile in '<Compiler>/<Version>'
+            hierarchy_name = self._compiler_module_directory(self.spec.compiler.name, self.spec.compiler.version)
+        else:
+            # If the module is MPI parallel then put the modulefile in
+            # '<MPI>/<MPI-Version>/<Compiler/<Compiler-Version>'
+            compiler = self.spec.compiler
+            mpi = self.spec['mpi']
+            hierarchy_name = self._mpi_module_directory(compiler.name, compiler.version, mpi.name, mpi.version)
+        fullname = join_path(self.modules_root, hierarchy_name, self.use_name + '.lua')
+        return fullname
+
+    @property
+    def use_name(self):
+        return join_path(self.spec.name, str(self.spec.version))
+
+    @staticmethod
+    def _compiler_module_directory(name, version):
+        return '{compiler_name}/{compiler_version}'.format(
+                compiler_name=name,
+                compiler_version=version
+            )
+
+    @staticmethod
+    def _mpi_module_directory(compiler_name, compiler_version, mpi_name, mpi_version):
+        return '{mpi_name}/{mpi_version}/{compiler_name}/{compiler_version}'.format(
+                mpi_name=mpi_name,
+                mpi_version=mpi_version,
+                compiler_name=compiler_name,
+                compiler_version=compiler_version
+            )
+
+    def write_header(self, module_file):
+        # Header as in
+        # https://www.tacc.utexas.edu/research-development/tacc-projects/lmod/advanced-user-guide/more-about-writing-module-files
+        module_file.write("-- -*- lua -*-\n")
+        # Short description -> whatis()
+        if self.short_description:
+            module_file.write("whatis([[Name : {name}]])\n".format(name=self.spec.name))
+            module_file.write("whatis([[Version : {version}]])\n".format(version=self.spec.version))
+
+        # Long description -> help()
+        if self.long_description:
+            doc = re.sub(r'"', '\"', self.long_description)
+            module_file.write("help([[{documentation}]])\n".format(documentation=doc))
+
+        env = EnvironmentModifications()
+        # Add family protection
+        if self.family is not None:
+            module_file.write('family("{family}")\n'.format(family=self.family))
+
+        # Prepend path if family is 'compiler' or 'mpi'
+        modulepath = ''
+        if self.family is 'compiler':
+            hierarchy_name = self._compiler_module_directory(self.spec.name, self.spec.version)
+            modulepath = join_path(self.modules_root, hierarchy_name)
+
+        elif self.family is 'mpi':
+            s = self.spec
+            hierarchy_name = self._mpi_module_directory(s.compiler.name, s.compiler.version, s.name, s.version)
+            modulepath = join_path(self.modules_root, hierarchy_name)
+
+        if modulepath:
+            env.prepend_path('MODULEPATH', modulepath)
+
+        for item in self.process_environment_command(env):
+            module_file.write(item)
+
+    def _use_system_compiler(self):
+        """
+        True if the spec uses the OS default compiler
+
+        :return: True or False
+        """
+        # FIXME: How can I check if a spec has been constructed using the OS default compiler?
+        compiler = spack.compilers.compiler_for_spec(self.spec.compiler)
+        compiler_directory = os.path.dirname(compiler.cc)
+        if spack.prefix in compiler_directory:
+            return False
+        return True
+
+    def _is_mpi_dependent(self):
+        """
+        Traverse the DAG (excluding root) to see if the spec depends on MPI
+
+        :return: True or False
+        """
+        for item in self.spec.traverse(root=False):
+            if 'mpi' in item:
+                return True
+        return False
