@@ -35,9 +35,7 @@ import spack
 from llnl.util.filesystem import join_path
 from llnl.util.lock import *
 from llnl.util.tty.colify import colify
-from spack.database import Database
-from spack.directory_layout import YamlDirectoryLayout
-from spack.test.mock_packages_test import *
+from spack.test.mock_database import MockDatabase
 
 
 def _print_ref_counts():
@@ -158,7 +156,6 @@ class DatabaseTest(MockPackagesTest):
 
         self.assertTrue(os.path.exists(index_file))
         self.assertTrue(os.path.exists(lock_file))
-
 
     def test_010_all_install_sanity(self):
         """Ensure that the install layout reflects what we think it does."""
