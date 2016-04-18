@@ -323,10 +323,10 @@ class LmodModule(EnvModule):
 
     @property
     def file_name(self):
-        if self._use_system_compiler() and not self._is_mpi_dependent():
+        if self._use_system_compiler() and not self._is_dependent('mpi'):
             # If the module is installed using the system compiler and does not need MPI put the modulefile in 'Core'
             hierarchy_name = 'Core'
-        elif not self._is_mpi_dependent():
+        elif not self._is_dependent('mpi'):
             # If the module is serial and built using a compiler other than the system one,
             # put the modulefile in '<Compiler>/<Version>'
             hierarchy_name = self._compiler_module_directory(self.spec.compiler.name, self.spec.compiler.version)
@@ -408,13 +408,13 @@ class LmodModule(EnvModule):
             return False
         return True
 
-    def _is_mpi_dependent(self):
+    def _is_dependent(family, self):
         """
-        Traverse the DAG (excluding root) to see if the spec depends on MPI
-
+        Traverse the DAG (excluding root) to see if the spec depends on a particular family
+        :inputs: string family
         :return: True or False
         """
         for item in self.spec.traverse(root=False):
-            if 'mpi' in item:
+            if family in item:
                 return True
         return False
